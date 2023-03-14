@@ -32,8 +32,9 @@ function DrawFmsLanes(guiAction) {
     Polyline.call(this, guiAction);
 
     this.polylineEntity = undefined;
-    this.leftBoundaryEntity = undefined;
-    this.rightBoundaryEntity = undefined;
+    this.ribsLaneId = null;
+    // this.leftBoundaryEntity = undefined;
+    // this.rightBoundaryEntity = undefined;
     this.arcSegment = false;
     this.laneWidth = 20; // 20meters
     this.laneWidthCm = this.laneWidth * 100;
@@ -48,6 +49,14 @@ function DrawFmsLanes(guiAction) {
 
 DrawFmsLanes.prototype = new Polyline();
 DrawFmsLanes.includeBasePath = includeBasePath;
+
+DrawFmsLanes.prototype.fmsTruncate = function(number) {
+    return number;
+    // floor and ceiling didn't work as new lane_ribs doesn't snap correctly in qcad, must be missing something
+    // return number >= 0 ?
+    //     Math.floor(number * 100) / 100
+    //     : Math.ceil(number * 100) / 100;
+}
 
 DrawFmsLanes.State = {
     SettingFirstVertex : 0,
@@ -76,10 +85,11 @@ DrawFmsLanes.prototype.initState = function(state) {
         this.setLeftMouseTip(trFirstVertex);
         this.setRightMouseTip(EAction.trCancel);
         this.segment = undefined;
-        this.leftBoundaryEntity = new RPolylineEntity(this.getDocument(), new RPolylineData());
-        this.rightBoundaryEntity = new RPolylineEntity(this.getDocument(), new RPolylineData());
+        // this.leftBoundaryEntity = new RPolylineEntity(this.getDocument(), new RPolylineData());
+        // this.rightBoundaryEntity = new RPolylineEntity(this.getDocument(), new RPolylineData());
         EAction.showSnapTools();
         this.redoList = [];
+        this.ribsLaneId = Date.now() + '_' + Math.random();
         break;
     case DrawFmsLanes.State.SettingNextVertex:
         this.getDocumentInterface().setClickMode(RAction.PickCoordinate);
@@ -98,6 +108,8 @@ DrawFmsLanes.prototype.initState = function(state) {
  * @param lineEndPoint - RVector
  */
 DrawFmsLanes.prototype.drawRibsBasedOnLine = function(lineStartPoint, lineEndPoint, isLastVertex) {
+    lineStartPoint = new RVector(this.fmsTruncate(lineStartPoint.getX()), this.fmsTruncate(lineStartPoint.getY()));
+    lineEndPoint = new RVector(this.fmsTruncate(lineEndPoint.getX()), this.fmsTruncate(lineEndPoint.getY()));
     // create left rib based on directionVector to next vertex, multiplied by input laneWidth
     var ribLeft = new RLine(lineStartPoint, lineEndPoint);
     // get leftRib from directionVector rotated 90-deg
@@ -110,8 +122,8 @@ DrawFmsLanes.prototype.drawRibsBasedOnLine = function(lineStartPoint, lineEndPoi
     var ribLeftVecNorm = ribLeftVec.getNormalized();
     var scaled = ribLeftVecNorm.scale(this.laneWidth);
     var ribLeftFinalEndPoint = new RVector(
-        ribLeft.startPoint.getX() + scaled.getX(),
-        ribLeft.startPoint.getY() + scaled.getY());
+        this.fmsTruncate(ribLeft.startPoint.getX() + scaled.getX()),
+        this.fmsTruncate(ribLeft.startPoint.getY() + scaled.getY()));
 
     var ribRight = new RLine(lineStartPoint, lineEndPoint);
     ribRight.rotate(-Math.PI/2, ribRight.startPoint);
@@ -121,8 +133,8 @@ DrawFmsLanes.prototype.drawRibsBasedOnLine = function(lineStartPoint, lineEndPoi
     var ribRightVecNorm = ribRightVec.getNormalized();
     var ribRightVecScaled = ribRightVecNorm.scale(this.laneWidth);
     var ribRightFinalEndPoint = new RVector(
-        ribRight.startPoint.getX() + ribRightVecScaled.getX(),
-        ribRight.startPoint.getY() + ribRightVecScaled.getY());
+        this.fmsTruncate(ribRight.startPoint.getX() + ribRightVecScaled.getX()),
+        this.fmsTruncate(ribRight.startPoint.getY() + ribRightVecScaled.getY()));
 
     // todo use this.applyOperation ?
     var rib = new RPolylineEntity(
@@ -140,21 +152,15 @@ DrawFmsLanes.prototype.drawRibsBasedOnLine = function(lineStartPoint, lineEndPoi
     rib.setCustomProperty("QCAD", "type", "ribs");
     rib.setCustomProperty("QCAD", "center_point_x", lineStartPoint.getX());
     rib.setCustomProperty("QCAD", "center_point_y", lineStartPoint.getY());
-
+    rib.setCustomProperty("QCAD", "ribs_lane_id", this.ribsLaneId);
 
     if (isLastVertex) {
-        this.leftBoundaryEntity.appendVertex(ribRightFinalEndPoint);
-        this.rightBoundaryEntity.appendVertex(ribLeftFinalEndPoint);
-
-        this.leftBoundaryEntity.appendVertex(this.rightBoundaryEntity.getVertexAt(this.rightBoundaryEntity.countVertices()-1));
-        this.rightBoundaryEntity.prependVertex(this.leftBoundaryEntity.getVertexAt(0));
-
         var line = new RLine(lineEndPoint, lineStartPoint);
         rib.setCustomProperty("QCAD", "yaw_crad", line.getAngle() * 100);
     }
     else {
-        this.leftBoundaryEntity.appendVertex(ribLeftFinalEndPoint);
-        this.rightBoundaryEntity.appendVertex(ribRightFinalEndPoint);
+        // this.leftBoundaryEntity.appendVertex(ribLeftFinalEndPoint);
+        // this.rightBoundaryEntity.appendVertex(ribRightFinalEndPoint);
         var line = new RLine(lineStartPoint, lineEndPoint);
         rib.setCustomProperty("QCAD", "yaw_crad", line.getAngle() * 100);
     }
@@ -187,24 +193,24 @@ DrawFmsLanes.prototype.escapeEvent = function() {
                 // add rib to last vertex
                 this.drawRibsBasedOnLine(this.segment.endPoint, this.segment.startPoint, true);
 
-                var op = new RAddObjectsOperation();
-                var allBoundary = new RPolylineEntity(this.getDocument(), this.leftBoundaryEntity.getData());
-
-                for (var i = this.rightBoundaryEntity.countVertices()-1; i >= 0 ; i--) {
-                    allBoundary.appendVertex(this.rightBoundaryEntity.getVertexAt(i));
-                }
-                allBoundary.normalize(0.001);
-
-                op.addObject(allBoundary);
-                // op.addObject(this.rightBoundaryEntity);
-                this.getDocumentInterface().applyOperation(op);
+                // var op = new RAddObjectsOperation();
+                // var allBoundary = new RPolylineEntity(this.getDocument(), this.leftBoundaryEntity.getData());
+                //
+                // for (var i = this.rightBoundaryEntity.countVertices()-1; i >= 0 ; i--) {
+                //     allBoundary.appendVertex(this.rightBoundaryEntity.getVertexAt(i));
+                // }
+                // allBoundary.normalize(0.001);
+                //
+                // op.addObject(allBoundary);
+                // this.getDocumentInterface().applyOperation(op);
             }
         }
 
         this.setState(DrawFmsLanes.State.SettingFirstVertex);
         this.polylineEntity = undefined;
-        this.leftBoundaryEntity = undefined;
-        this.rightBoundaryEntity = undefined;
+        this.ribsLaneId = null;
+        // this.leftBoundaryEntity = undefined;
+        // this.rightBoundaryEntity = undefined;
         this.updateButtonStates();
         break;
     }
@@ -249,14 +255,15 @@ DrawFmsLanes.prototype.pickCoordinate = function(event, preview) {
     case DrawFmsLanes.State.SettingFirstVertex:
         if (!preview) {
             point = event.getModelPosition();
+            var pointTrunc = new RVector(this.fmsTruncate(point.getX()), this.fmsTruncate(point.getY()));
 
             var pl = new RPolylineEntity(document, new RPolylineData());
-
-            pl.appendVertex(point);
+// debugger
+            pl.appendVertex(pointTrunc);
             op = new RAddObjectOperation(pl, this.getToolTitle());
             this.applyOperation(op);
 
-            di.setRelativeZero(point);
+            di.setRelativeZero(pointTrunc);
             if (!isNull(this.polylineEntity)) {
                 this.setState(DrawFmsLanes.State.SettingNextVertex);
             }
@@ -266,7 +273,7 @@ DrawFmsLanes.prototype.pickCoordinate = function(event, preview) {
     // set next vertex:
     case DrawFmsLanes.State.SettingNextVertex:
         point = event.getModelPosition();
-        // debugger;
+        var pointTrunc = new RVector(this.fmsTruncate(point.getX()), this.fmsTruncate(point.getY()));
 
         // number of existing vertices:
         var numberOfVertices;
@@ -280,8 +287,6 @@ DrawFmsLanes.prototype.pickCoordinate = function(event, preview) {
         if (numberOfVertices>0) {
             var bulge;
             var vertex;
-            var ribLeft;
-            var ribRight;
             var appendPoint;
             if (this.prepend) {
                 appendPoint = this.polylineEntity.getStartPoint();
@@ -303,7 +308,7 @@ DrawFmsLanes.prototype.pickCoordinate = function(event, preview) {
 
                 this.segment = RArc.createTangential(
                         appendPoint,
-                        point,
+                        pointTrunc,
                         dir,
                         this.radius);
 
@@ -344,11 +349,11 @@ DrawFmsLanes.prototype.pickCoordinate = function(event, preview) {
                 this.angle = this.segment.getEndAngle();
             }
             else {
-                this.segment = new RLine(appendPoint, point);
+                this.segment = new RLine(appendPoint, pointTrunc);
                 var angle = this.segment.getAngle();
 
                 bulge = 0.0;
-                vertex = point;
+                vertex = pointTrunc;
 
                 this.center = undefined;
                 this.angle = undefined;
